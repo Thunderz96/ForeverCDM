@@ -1,5 +1,7 @@
 # ForeverCDM
 
+<img src=".github/logo.png" width="128" align="right" alt="Forever Cooldown Manager logo">
+
 A cooldown manager for **World of Warcraft: Forever** that needs no Blizzard Cooldown Manager data.
 
 Blizzard's Cooldown Manager has no authored data for Forever classes yet, so every addon that skins

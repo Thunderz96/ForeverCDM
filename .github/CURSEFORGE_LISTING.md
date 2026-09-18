@@ -25,6 +25,7 @@ Blizzard lists the built-in Cooldown Manager as a work in progress for Forever, 
 
 ### What you get
 - **Three icon rows:** Cooldowns, Utilities and Buffs. Put any spell in any row.
+- **Items too.** Trinkets, potions, bandages and gadgets sit on the same bars, with cooldown, stack count, and a dimmed icon when you run out. Usable items from your gear and bags are listed for you.
 - **A settings window** (`/fcdm`): your whole spellbook grouped by school with every rank listed, one tick box per bar, reorder with arrows, lock or unlock.
 - **Size each bar on its own.** Icon size and spacing are set per bar.
 - **Keeps your setup on the beta.** The beta client forgets every addon's settings when the game restarts. Tick "Keep settings in a macro" and this addon stores your setup in one general macro and restores it at login. Opt-in, one macro per character, harmless if clicked.
@@ -32,7 +33,7 @@ Blizzard lists the built-in Cooldown Manager as a work in progress for Forever, 
 - **Minimap button.** Left-click for settings, right-click to lock or unlock the rows. Hide it if you prefer.
 - **Charges and swipes** drawn the way the default UI draws them.
 - **Buff timers that survive combat.** Buffs you cast yourself are followed by your own cast, so a seal or blessing applied mid-fight still gets a countdown.
-- **No libraries, no dependencies.** Two Lua files.
+- **No libraries, no dependencies.** Two Lua files and an icon.
 
 ### Works inside the rules
 Forever uses the same addon restrictions as Midnight: combat values are hidden from addons. This addon is display only. It never casts, never picks a spell for you, and hands hidden timing values straight to Blizzard's cooldown widget instead of reading them. Nothing here will get flagged or break when restrictions tighten.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6 (2026-09-18)
+- Settings window redrawn: solid background, three titled cards (Spellbook, Bar order, Settings),
+  spells grouped under their spellbook tab, hover highlight, a scroll position thumb, and flat
+  buttons and tick boxes drawn by the addon itself. No Blizzard templates are used any more, so UI
+  suites that reskin those templates can no longer distort the window.
+- Bar order shows each spell's icon, uses arrow buttons, and says how many icons the bar holds.
+- Minimap button: left-click opens settings, right-click locks or unlocks the rows, drag to move it
+  round the minimap. Hide it with the Settings tick box or `/fcdm minimap`.
+- The addon has its own icon in the addon list, the window header and the minimap button.
+
 ## 0.3.5 (2026-09-18)
 - Buffs you cast yourself are now followed through combat by your own cast event, which stays
   readable when auras do not. The timer uses a duration the addon measured out of combat, so a

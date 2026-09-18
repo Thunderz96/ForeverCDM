@@ -22,7 +22,15 @@ for _, name in ipairs({ 'SetTexCoord', 'ClearAllPoints', 'SetMovable', 'SetClamp
     'SetCooldownFromDurationObject', 'Clear', 'SetAllPoints', 'SetColorTexture',
     'RegisterForDrag', 'StartMoving', 'StopMovingOrSizing', 'SetFrameStrata',
     'SetBackdrop', 'SetBackdropColor', 'SetJustifyH', 'SetAutoFocus', 'SetOwner',
-    'SetSpellByID', 'SetVerticalScroll', 'SetScrollStep', 'SetEnabled' }) do methods[name] = noop end
+    'SetSpellByID', 'SetVerticalScroll', 'SetScrollStep', 'SetEnabled',
+    -- used by the flat widget kit and the minimap button
+    'SetTextColor', 'SetFontString', 'SetCheckedTexture', 'SetFontObject', 'SetTextInsets', 'ClearFocus',
+    'EnableMouseWheel', 'SetVertexColor', 'SetFrameLevel', 'RegisterForClicks', 'SetHighlightTexture',
+    'SetToplevel', 'SetAtlas', 'AddLine' }) do methods[name] = noop end
+function methods:GetVerticalScroll() return 0 end
+function methods:GetVerticalScrollRange() return 0 end
+function methods:GetCenter() return 0, 0 end
+function methods:GetEffectiveScale() return 1 end
 function methods:SetSize(w, h) self.width, self.height = w, h end
 function methods:SetHeight(h) self.height = h end
 function methods:SetWidth(w) self.width = w end
@@ -51,6 +59,10 @@ function methods:Hide() self.shown = false end
 function methods:SetShown(v) if v then self:Show() else self:Hide() end end
 CreateFrame = object
 UIParent, GameTooltip = object('Frame'), object('Tooltip')
+Minimap = object('Frame')
+Minimap.width = 140
+local cursorX, cursorY = 0, 0
+GetCursorPosition = function() return cursorX, cursorY end
 C_Timer = { NewTicker = noop, After = function(_, fn) fn() end }
 Enum = { SpellBookSpellBank = { Player = 0 } }
 local spells = {101, 102}
@@ -121,4 +133,35 @@ ForeverCDM_RefreshConfig()
 assert(orderRow(1).name:GetText() == 'Newly Learned', 'Utility ordering list did not refresh')
 ForeverCDMConfig.orderClear.scripts.OnClick(ForeverCDMConfig.orderClear)
 assert(#ForeverCDMDB.utilities == 0 and #oldCDs == 2, 'Clear bar affected wrong list')
-print('runtime migration, config, learned-spell refresh, and utility checks passed')
+-- Spell rows are grouped under one heading per spellbook tab.
+local headings = 0
+for _, f in ipairs(frames) do
+    if f.kind == 'FontString' and f.textValue == 'PALADIN' then headings = headings + 1 end
+end
+assert(headings == 1, 'expected exactly one PALADIN heading, got ' .. headings)
+
+-- Minimap button: built at login, opens settings, right-click locks, drag saves the angle.
+local mm = ForeverCDMMinimapButton
+assert(mm and mm:IsShown(), 'minimap button was not created at login')
+assert(ForeverCDMDB.minimap.angle == 215 and ForeverCDMDB.minimap.hide == false, 'minimap defaults missing')
+ForeverCDMConfig:Hide()
+mm.scripts.OnClick(mm, 'LeftButton')
+assert(ForeverCDMConfig:IsShown(), 'left-click did not open settings')
+mm.scripts.OnClick(mm, 'LeftButton')
+assert(not ForeverCDMConfig:IsShown(), 'second left-click did not close settings')
+local wasLocked = ForeverCDMDB.locked
+mm.scripts.OnClick(mm, 'RightButton')
+assert(ForeverCDMDB.locked == (not wasLocked), 'right-click did not toggle the row lock')
+mm.scripts.OnClick(mm, 'RightButton')
+cursorX, cursorY = 0, 100                      -- straight up from the minimap centre
+mm.scripts.OnDragStart(mm)
+mm.scripts.OnUpdate(mm)
+mm.scripts.OnDragStop(mm)
+assert(math.abs(ForeverCDMDB.minimap.angle - 90) < 0.001, 'drag did not save the angle')
+assert(mm.scripts.OnUpdate == nil, 'drag tracking was left running')
+SlashCmdList['FOREVERCDM']('minimap')
+assert(ForeverCDMDB.minimap.hide == true and not mm:IsShown(), '/fcdm minimap did not hide the button')
+SlashCmdList['FOREVERCDM']('minimap')
+assert(ForeverCDMDB.minimap.hide == false and mm:IsShown(), '/fcdm minimap did not show it again')
+
+print('runtime migration, config, learned-spell refresh, utility, grouping and minimap checks passed')

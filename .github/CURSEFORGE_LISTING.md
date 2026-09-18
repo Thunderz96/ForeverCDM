@@ -27,6 +27,7 @@ Blizzard lists the built-in Cooldown Manager as a work in progress for Forever, 
 - **Three icon rows:** Cooldowns, Utilities and Buffs. Put any spell in any row.
 - **A settings window** (`/fcdm`): your whole spellbook in a list, one tick box per row, reorder with Up and Down, icon size and spacing, lock or unlock.
 - **Drag to place.** Unlock, drag each row where you want it, lock again.
+- **Minimap button.** Left-click for settings, right-click to lock or unlock the rows. Hide it if you prefer.
 - **Charges and swipes** drawn the way the default UI draws them.
 - **Buff timers that survive combat.** Buffs you cast yourself are followed by your own cast, so a seal or blessing applied mid-fight still gets a countdown.
 - **No libraries, no dependencies.** Two Lua files.

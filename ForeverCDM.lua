@@ -63,6 +63,7 @@ local function ensureDB()
     db.utilities = db.utilities or {}
     db.pos.utilities = db.pos.utilities or { "CENTER", 0, -220 }
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
+    db.minimap = db.minimap or { angle = 215, hide = false }
 end
 
 -- Spell helpers ---------------------------------------------------------------
@@ -477,6 +478,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         self:RegisterEvent("SPELLS_CHANGED")
         local ver = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version") or "?"
         say("v%s loaded. /fcdm opens settings.", tostring(ver))
+        if ForeverCDM_InitMinimap then ForeverCDM_InitMinimap() end
     elseif event == "UNIT_AURA" then
         onAuraEvent(...)
         updateBuffs()
@@ -508,6 +510,7 @@ local HELP = {
     "/fcdm size <px>         icon size (default 36)   /fcdm spacing <px>",
     "/fcdm hideready on|off  hide cooldown icons while ready",
     "/fcdm names on|off      show spell names under icons",
+    "/fcdm minimap           show or hide the minimap button",
     "/fcdm reset             back to defaults",
 }
 
@@ -624,6 +627,13 @@ SlashCmdList.FOREVERCDM = function(msg)
                 if type(data) == "table" and not secret(data.spellId) and data.spellId == id then hit = data end
             end, true)
             say("  ForEachAura HELPFUL -> ok=%s walked=%d match=%s", tostring(okW), n, hit and desc(hit) or tostring(okW and "none" or errW):sub(1, 120))
+        end
+
+    elseif cmd == "minimap" then
+        if ForeverCDM_SetMinimapShown then
+            ForeverCDM_SetMinimapShown(db.minimap.hide)   -- hide=true means show it now
+            say("minimap button %s.", db.minimap.hide and "hidden" or "shown")
+            if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
         end
 
     elseif cmd == "auradebug" then

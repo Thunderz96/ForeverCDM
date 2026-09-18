@@ -1,11 +1,15 @@
 # Changelog
 
 ## 0.4.0 (2026-09-18)
-- **Your setup now survives a game restart on the beta.** The Forever beta client saves addon
-  settings and never loads them back, so every addon starts from defaults. Forever Cooldown Manager
-  now also keeps its settings in client CVars, which the client does load, and restores them when
-  the saved settings come back empty. Kept per character. Once Blizzard fixes the client the mirror
-  simply stops being needed. `/fcdm mirror` shows its state.
+- **Your setup can now survive a game restart on the beta.** The Forever beta client saves addon
+  settings and never loads them back, so every addon starts from defaults. Tick "Keep settings in
+  a macro" (or `/fcdm mirror on`) and the addon keeps your setup in one general macro per
+  character, which the client does bring back, and restores it when the saved settings come back
+  empty. It is opt-in, so nobody gets a macro they did not ask for; if your settings were forgotten
+  and the option is off, the addon tells you once. Clicking the macro is harmless. Once Blizzard
+  fixes the client it simply stops being needed. `/fcdm mirror` shows its state.
+  Measured first: CVars registered by an addon do not reach disk on this build, even after a clean
+  logout, so that route was dropped.
 - **Each bar has its own icon size and spacing.** Pick a bar in the Bars card and adjust it there.
   `/fcdm size buffs 30` sets one bar, `/fcdm size 40` sets them all.
 - **Spell ranks are shown.** Forever lists every rank as its own spell, so the spellbook and bar

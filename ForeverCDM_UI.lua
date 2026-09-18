@@ -358,6 +358,7 @@ refreshList = function()
     win.hideReady:SetChecked(d.hideReady)
     win.names:SetChecked(d.showNames)
     win.minimap:SetChecked(not d.minimap.hide)
+    win.macroMirror:SetChecked(d.macroMirror and true or false)
     refreshOrderList()
 end
 
@@ -488,6 +489,12 @@ local function build()
     win.hideReady = check("Hide ready cooldowns", function(self) db().hideReady = self:GetChecked() and true or false CDM.Refresh() end)
     win.names = check("Show spell names", function(self) db().showNames = self:GetChecked() and true or false CDM.Refresh() end)
     win.minimap = check("Minimap button", function(self) ForeverCDM_SetMinimapShown(self:GetChecked() and true or false) end)
+    win.macroMirror = check("Keep settings in a macro", function(self) ForeverCDM_SetMacroMirror(self:GetChecked() and true or false) end)
+    local why = text(opts, "GameFontDisableSmall", "The beta client forgets addon settings when the game restarts. This saves your setup in one general macro and reads it back at login.")
+    why:SetPoint("TOPLEFT", 34, y + 4)
+    why:SetWidth(148)
+    why:SetJustifyH("LEFT")
+    y = y - 50
 
     y = y - 8
     win.lockBtn = wide("Unlock rows to drag", function() ForeverCDM_SetLocked(not db().locked) refreshList() end)

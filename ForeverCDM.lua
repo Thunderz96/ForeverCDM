@@ -38,6 +38,7 @@ local rows = {}          -- key -> row frame
 local icons = { cds = {}, utilities = {}, buffs = {} }
 local BAR_KEYS = { "cds", "utilities", "buffs" }
 local persistSoon        -- defined in the settings-mirror section; called wherever settings change
+local lateMirror         -- defined just above the event frame
 
 local function say(fmt, ...) print(NAME .. ": " .. string.format(fmt, ...)) end
 
@@ -523,24 +524,40 @@ end
 
 -- Settings mirror ---------------------------------------------------------------------
 -- WHY: the Forever beta client writes addon SavedVariables on exit and never
--- loads them at the next launch, so every addon starts from defaults. CVars an
--- addon registers itself ARE saved and loaded by the client (config-cache.wtf),
--- so the settings are also kept there as a short text string.
+-- loads them at the next launch, so every addon starts from defaults.
 --
--- Rules: a SavedVariables table that did load always wins; the mirror is only
--- applied when it came back empty. Once Blizzard fixes the client this section
--- simply never restores anything. It is keyed per character, because tracked
--- spells are class-specific. (CVar persistence seen in RevoltLive85/ForeverGuide.)
-local MIRROR_CHUNK, MIRROR_CHUNKS = 200, 10     -- characters per CVar, CVars per character
-local mirror = { available = false, hadSV = false, found = 0, restored = false, wrote = 0 }
-local mirrorDirty = false
+-- MEASURED 2026-09-18 on build 1.60.1.69893: CVars an addon registers itself do
+-- NOT reach disk, even after a clean logout (config-cache.wtf only ever holds
+-- Blizzard's own CVars). A macro created through the API DOES survive a cold
+-- start. So the mirror lives in an account macro, one per character.
+--
+-- Rules:
+--   * Opt-in (db.macroMirror): nobody gets a macro they did not ask for. The
+--     macro existing is itself the "on" flag, so the choice survives too.
+--   * A SavedVariables table that did load always wins; the macro is only
+--     applied when it came back empty. Once Blizzard fixes the client this
+--     never restores anything.
+--   * Never write before reading. On a cold start the macro list can arrive
+--     after PLAYER_LOGIN; saving first would replace the stored setup with
+--     defaults. Writes wait for mirror.ready.
+--   * The body is a real slash command, so clicking the macro explains itself
+--     instead of sending the text to /say.
+--   * Macro edits are blocked in combat; a pending write waits for it to end.
+local MIRROR_DATA, MIRROR_MACROS = 235, 3      -- data characters per macro, macros per character
+local MIRROR_ICON = "INV_Misc_Gear_01"
+local mirror = { hadSV = false, found = 0, restored = false, ready = false, wrote = 0, note = "nothing written yet" }
+local mirrorDirty, hinted = false, false
 
-local function mirrorPrefix()
-    -- hashed so any character name, in any alphabet, gives a plain ASCII CVar name
+local function mirrorName(i)
+    -- hashed so any character name, in any alphabet, gives a short plain macro name (16 character limit)
     local who = tostring(UnitName and UnitName("player") or "") .. "-" .. tostring(GetRealmName and GetRealmName() or "")
     local h = 5381
-    for i = 1, #who do h = (h * 33 + who:byte(i)) % 2147483647 end
-    return string.format("FCDM%08xN", h)
+    for c = 1, #who do h = (h * 33 + who:byte(c)) % 2147483647 end
+    return string.format("FCDM%08x%d", h, i)
+end
+
+local function macroAPI()
+    return CreateMacro and EditMacro and DeleteMacro and GetMacroBody and GetMacroIndexByName and true or false
 end
 
 local function encodeSettings(withDurations)
@@ -600,39 +617,106 @@ local function applySettings(s)
     return true
 end
 
+-- The stored string, or nil. Each macro body is "/fcdm store <i>/<n> <data>".
 local function readMirror()
-    if not (C_CVar and C_CVar.RegisterCVar and C_CVar.GetCVar and C_CVar.SetCVar) then return nil end
-    mirror.available = true
-    local prefix, parts = mirrorPrefix(), {}
-    for i = 0, MIRROR_CHUNKS - 1 do pcall(C_CVar.RegisterCVar, prefix .. i, "") end
-    for i = 0, MIRROR_CHUNKS - 1 do
-        local ok, v = pcall(C_CVar.GetCVar, prefix .. i)
-        if not ok or type(v) ~= "string" or v == "" then break end
-        parts[#parts + 1] = v
+    if not macroAPI() then return nil end
+    local parts, total = {}, nil
+    for i = 1, MIRROR_MACROS do
+        local ok, index = pcall(GetMacroIndexByName, mirrorName(i))
+        if not ok or not index or index == 0 then break end
+        local okB, body = pcall(GetMacroBody, index)
+        local n, of, data = (okB and body or ""):match("^/fcdm store (%d+)/(%d+) (.*)$")
+        if tonumber(n) ~= i then break end
+        total = total or tonumber(of)
+        parts[i] = data
+        if i == total then break end
     end
-    local s = table.concat(parts)
-    return s ~= "" and s or nil
+    if not total or #parts ~= total then return nil end
+    return table.concat(parts)
+end
+
+local function deleteMirror()
+    if not macroAPI() then return end
+    for i = MIRROR_MACROS, 1, -1 do
+        local ok, index = pcall(GetMacroIndexByName, mirrorName(i))
+        if ok and index and index > 0 then pcall(DeleteMacro, index) end
+    end
 end
 
 local function writeMirror()
     mirrorDirty = false
-    if not (db and mirror.available) then return end
+    if not (db and db.macroMirror and mirror.ready) then return end
+    if not macroAPI() then mirror.note = "this client has no macro API" return end
+    if InCombatLockdown and InCombatLockdown() then
+        mirror.note = "waiting for combat to end"
+        mirror.afterCombat = true          -- PLAYER_REGEN_ENABLED picks this up
+        return
+    end
     local s = encodeSettings(true)
-    if #s > MIRROR_CHUNK * MIRROR_CHUNKS then s = encodeSettings(false) end   -- durations are re-learnable
-    if #s > MIRROR_CHUNK * MIRROR_CHUNKS then mirror.wrote = -1 return end     -- too big: keep the last good copy
-    local prefix = mirrorPrefix()
-    -- every chunk is written, unused ones as "", so a shorter string never
-    -- leaves the tail of an older, longer one behind
-    for i = 0, MIRROR_CHUNKS - 1 do
-        pcall(C_CVar.SetCVar, prefix .. i, s:sub(i * MIRROR_CHUNK + 1, (i + 1) * MIRROR_CHUNK))
+    if #s > MIRROR_DATA * MIRROR_MACROS then s = encodeSettings(false) end      -- durations are re-learnable
+    if #s > MIRROR_DATA * MIRROR_MACROS then                                    -- keep the last good copy
+        mirror.note = "settings too large for the macro; the last saved copy was kept"
+        return
+    end
+    local n = math.max(1, math.ceil(#s / MIRROR_DATA))
+    for i = 1, MIRROR_MACROS do
+        local name = mirrorName(i)
+        local ok, index = pcall(GetMacroIndexByName, name)
+        index = ok and index or 0
+        if i <= n then
+            local body = string.format("/fcdm store %d/%d %s", i, n, s:sub((i - 1) * MIRROR_DATA + 1, i * MIRROR_DATA))
+            if index > 0 then
+                pcall(EditMacro, index, nil, nil, body)
+            else
+                local okC, made = pcall(CreateMacro, name, MIRROR_ICON, body, nil)
+                if not okC or not made then
+                    mirror.note = "could not create the macro (are all 120 general macro slots full?)"
+                    return
+                end
+            end
+        elseif index > 0 then
+            pcall(DeleteMacro, index)      -- a shorter save needs fewer macros
+        end
     end
     mirror.wrote = #s
+    mirror.note = #s .. " characters in " .. n .. (n == 1 and " macro" or " macros")
 end
 
 persistSoon = function()
+    if db and not db.macroMirror and not mirror.hadSV and not hinted and mirror.ready then
+        hinted = true
+        say("heads up: the beta client forgets addon settings when the game restarts. Tick \"Keep settings in a macro\" in /fcdm to keep this setup.")
+    end
     if mirrorDirty then return end
     mirrorDirty = true
     if C_Timer and C_Timer.After then C_Timer.After(1, writeMirror) else writeMirror() end
+end
+
+-- Called at login and again once the macro list has certainly loaded.
+-- Returns true when settings were restored from the macro.
+local function mirrorLogin(final)
+    if mirror.ready then return false end
+    local stored = readMirror()
+    if stored then
+        mirror.found = #stored
+        db.macroMirror = true                       -- the macro existing is the opt-in
+        if not mirror.hadSV then mirror.restored = applySettings(stored) end
+    end
+    if stored or final then mirror.ready = true end
+    return stored ~= nil and mirror.restored
+end
+
+function ForeverCDM_SetMacroMirror(on)
+    db.macroMirror = on and true or false
+    if on then
+        persistSoon()
+    elseif InCombatLockdown and InCombatLockdown() then
+        say("the settings macro will be removed when combat ends.")
+        mirror.deleteAfterCombat = true
+    else
+        deleteMirror()
+        mirror.note = "off; macro removed"
+    end
 end
 
 -- Shared with the config window.
@@ -650,21 +734,30 @@ function ForeverCDM.Auto() return autoPopulate() end
 
 -- Events ---------------------------------------------------------------------------
 
+local RESTORED_MSG = "the client did not load saved settings (beta bug), so they were restored from your settings macro."
+
+-- The macro list can arrive after PLAYER_LOGIN on a cold start. Until the mirror
+-- has been read (or is known to be absent) nothing is written to it.
+function lateMirror(final)
+    if mirror.ready then return end
+    if mirrorLogin(final) then
+        say(RESTORED_MSG)
+        refreshAll()
+        if ForeverCDM_InitMinimap then ForeverCDM_InitMinimap() end
+        if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
+    end
+end
+
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
+ev:RegisterEvent("UPDATE_MACROS")     -- from file load, so an early firing is not missed
 ev:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
         -- Did the client hand us saved settings? On the beta it never does.
         mirror.hadSV = type(ForeverCDMDB) == "table" and next(ForeverCDMDB) ~= nil
         ensureDB()
-        local stored = readMirror()
-        mirror.found = stored and #stored or 0
-        if stored and not mirror.hadSV then
-            mirror.restored = applySettings(stored)
-            if mirror.restored then
-                say("the client did not load saved settings (beta bug), so they were restored from the settings mirror.")
-            end
-        end
+        -- If UPDATE_MACROS already fired, the macro list is loaded and this read is final.
+        if mirrorLogin(mirror.macrosSeen) then say(RESTORED_MSG) end
         buildRankIndex()
         newRow("cds", "Cooldowns")
         newRow("utilities", "Utilities")
@@ -676,6 +769,10 @@ ev:SetScript("OnEvent", function(self, event, ...)
         self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         self:RegisterEvent("SPELLS_CHANGED")
         self:RegisterEvent("PLAYER_LOGOUT")
+        self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        -- Still waiting for the macro list: UPDATE_MACROS will say when it has
+        -- arrived. The timer only covers a client where that event never fires.
+        if not mirror.ready and C_Timer and C_Timer.After then C_Timer.After(15, function() lateMirror(true) end) end
         local ver = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version") or "?"
         say("v%s loaded. /fcdm opens settings.", tostring(ver))
         if ForeverCDM_InitMinimap then ForeverCDM_InitMinimap() end
@@ -687,6 +784,12 @@ ev:SetScript("OnEvent", function(self, event, ...)
         updateBuffs()
     elseif event == "PLAYER_LOGOUT" then
         writeMirror()        -- flush anything still waiting on the debounce
+    elseif event == "UPDATE_MACROS" then
+        mirror.macrosSeen = true
+        if db then lateMirror(true) end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
+        if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
     elseif event == "SPELLS_CHANGED" then
         buildRankIndex()
         refreshAll()
@@ -711,7 +814,7 @@ local HELP = {
     "/fcdm list              show what is tracked",
     "/fcdm unlock | lock     drag the rows, then lock",
     "/fcdm size [bar] <px>   icon size, all bars or one of cds|utility|buffs. Same for /fcdm spacing",
-    "/fcdm mirror            state of the saved-settings workaround for the beta client",
+    "/fcdm mirror [on|off]   keep settings in a macro, because the beta client forgets them on restart",
     "/fcdm hideready on|off  hide cooldown icons while ready",
     "/fcdm names on|off      show spell names under icons",
     "/fcdm minimap           show or hide the minimap button",
@@ -784,21 +887,18 @@ SlashCmdList.FOREVERCDM = function(msg)
 
     elseif cmd == "mirror" then
         -- State of the saved-settings workaround; see the settings-mirror section.
-        if not mirror.available then say("settings mirror: this client has no C_CVar.RegisterCVar, so it is off.") return end
-        say("settings mirror: saved settings at login %s; mirror held %d characters at login and %s. Last write: %s.",
-            mirror.hadSV and "LOADED (mirror on standby)" or "were EMPTY (beta bug)",
-            mirror.found, mirror.restored and "was restored" or "was not needed",
-            mirror.wrote == -1 and "skipped, settings too large" or (mirror.wrote .. " characters"))
-        if rest == "restore" then
-            local stored = readMirror()
-            if stored and applySettings(stored) then
-                refreshAll()
-                if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
-                say("applied the mirror over the current settings.")
-            else
-                say("nothing stored to restore.")
-            end
+        if rest == "on" or rest == "off" then
+            ForeverCDM_SetMacroMirror(rest == "on")
+            if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
         end
+        say("settings macro is %s. Saved settings at login %s; the macro held %d characters at login and %s. Last write: %s.",
+            db.macroMirror and "ON" or "OFF (turn on with /fcdm mirror on)",
+            mirror.hadSV and "LOADED, so the macro was not needed" or "were EMPTY (beta bug)",
+            mirror.found, mirror.restored and "was restored" or "was not applied", mirror.note)
+
+    elseif cmd == "store" then
+        -- What the settings macro runs if someone clicks it.
+        say("this macro holds your Forever Cooldown Manager setup, because the beta client forgets addon settings. It is read automatically at login; clicking it does nothing. Turn it off with /fcdm mirror off.")
 
     elseif cmd == "hideready" or cmd == "names" then
         local on = rest == "on" or rest == "1" or rest == "true"

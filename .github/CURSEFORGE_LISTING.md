@@ -27,7 +27,7 @@ Blizzard lists the built-in Cooldown Manager as a work in progress for Forever, 
 - **Three icon rows:** Cooldowns, Utilities and Buffs. Put any spell in any row.
 - **A settings window** (`/fcdm`): your whole spellbook grouped by school with every rank listed, one tick box per bar, reorder with arrows, lock or unlock.
 - **Size each bar on its own.** Icon size and spacing are set per bar.
-- **Keeps your setup on the beta.** The beta client forgets every addon's settings on restart. This addon keeps a second copy where the client does load it, so your bars come back.
+- **Keeps your setup on the beta.** The beta client forgets every addon's settings when the game restarts. Tick "Keep settings in a macro" and this addon stores your setup in one general macro and restores it at login. Opt-in, one macro per character, harmless if clicked.
 - **Drag to place.** Unlock, drag each row where you want it, lock again.
 - **Minimap button.** Left-click for settings, right-click to lock or unlock the rows. Hide it if you prefer.
 - **Charges and swipes** drawn the way the default UI draws them.

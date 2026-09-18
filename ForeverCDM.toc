@@ -5,6 +5,7 @@
 ## Version: 0.3.5
 ## SavedVariables: ForeverCDMDB
 ## IconTexture: Interface\Icons\Spell_Holy_SealOfRighteousness
+## X-Curse-Project-ID: 1701701
 
 ForeverCDM.lua
 ForeverCDM_UI.lua

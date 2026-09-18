@@ -183,8 +183,20 @@ local function spellbookSpells()
             end
         end
     end
-    table.sort(out, function(a, b) if a.tab ~= b.tab then return a.tab < b.tab end return a.name < b.name end)
+    table.sort(out, function(a, b)
+        if a.tab ~= b.tab then return a.tab < b.tab end
+        if a.name ~= b.name then return a.name < b.name end
+        local ra, rb = CDM.RankNumber(a.id), CDM.RankNumber(b.id)      -- Rank 2 before Rank 10
+        if ra ~= rb then return ra < rb end
+        return a.id < b.id
+    end)
     return out
+end
+
+-- "Seal of Righteousness  Rank 2", the rank dimmed. Every rank is its own spell on Forever.
+local function nameWithRank(id, name)
+    local rank = CDM.SpellRank(id)
+    return rank and (name .. "  |cff8c8c96" .. rank .. "|r") or name
 end
 
 local ROW_H, HEAD_H, ORDER_H = 24, 22, 26
@@ -220,7 +232,7 @@ local function refreshOrderList()
         end
         row.index = i
         row.icon:SetTexture(CDM.SpellIcon(list[i]))
-        row.name:SetText(CDM.SpellName(list[i]))
+        row.name:SetText(nameWithRank(list[i], CDM.SpellName(list[i])))
         row.up:SetEnabled(i > 1)
         row.down:SetEnabled(i < #list)
         row.up:SetScript("OnClick", function(self)
@@ -246,6 +258,8 @@ local function refreshOrderList()
     win.orderTitle:SetText(#list == 0 and "Empty. Tick spells on the left."
         or (#list .. (#list == 1 and " icon" or " icons") .. ", shown left to right"))
     win.orderClear:SetText("Clear " .. BAR_NAMES[key])
+    win.sizeText:SetText(tostring(db().rowSize[key]))
+    win.spacingText:SetText(tostring(db().rowSpacing[key]))
     win.orderClear:SetScript("OnClick", function() wipe(db()[key]); CDM.Refresh(); refreshList(); refreshOrderList() end)
 end
 
@@ -325,7 +339,7 @@ refreshList = function()
         end
         r.id = s.id
         r.icon:SetTexture(CDM.SpellIcon(s.id))
-        r.name:SetText(s.name)
+        r.name:SetText(nameWithRank(s.id, s.name))
         r.cd:SetChecked(CDM.Contains(d.cds, s.id) ~= nil)
         r.utility:SetChecked(CDM.Contains(d.utilities, s.id) ~= nil)
         r.buff:SetChecked(CDM.Contains(d.buffs, s.id) ~= nil)
@@ -339,8 +353,6 @@ refreshList = function()
     for i = heads + 1, #headPool do headPool[i]:Hide() end
     content:SetHeight(math.max(y, 1))
 
-    win.sizeText:SetText(tostring(d.size))
-    win.spacingText:SetText(tostring(d.spacing))
     win.lockBtn:SetText(d.locked and "Unlock rows to drag" or "Lock rows")
     setActive(win.lockBtn, not d.locked)
     win.hideReady:SetChecked(d.hideReady)
@@ -400,8 +412,9 @@ local function build()
     content:SetWidth(420 - 16 - 6)      -- card minus insets minus the thumb gutter
     win.content = content
 
-    -- middle: bar order
-    local order = card(win, "BAR ORDER", 444, 222, TOP, BOTTOM)
+    -- middle: one bar at a time. The tabs pick the bar; its icon order, size and
+    -- spacing all live here, so each bar can be sized on its own.
+    local order = card(win, "BARS", 444, 222, TOP, BOTTOM)
     win.orderTabs = {}
     local tabX = 8
     for _, key in ipairs({ "cds", "utilities", "buffs" }) do
@@ -414,12 +427,39 @@ local function build()
     win.orderTitle:SetPoint("TOPLEFT", 10, -58)
     local oscroll, ocontent = scrollArea(order)
     oscroll:SetPoint("TOPLEFT", 8, -76)
-    oscroll:SetPoint("BOTTOMRIGHT", -8, 40)
+    oscroll:SetPoint("BOTTOMRIGHT", -8, 108)
     ocontent:SetWidth(222 - 16 - 6)
     win.orderPanel = ocontent
-    win.orderClear = flatButton(order, "Clear", 120, 22)
-    win.orderClear:SetPoint("BOTTOMLEFT", 8, 9)
     win.orderKey = "cds"
+
+    -- size and spacing of the selected bar: label on the left, "- value +" on the right
+    local rule = order:CreateTexture(nil, "ARTWORK")
+    rule:SetColorTexture(LINE[1], LINE[2], LINE[3], 1)
+    rule:SetHeight(1)
+    rule:SetPoint("BOTTOMLEFT", 8, 100)
+    rule:SetPoint("BOTTOMRIGHT", -8, 100)
+    local function barStepper(name, field, minV, maxV, fromBottom)
+        local label = text(order, "GameFontHighlightSmall", name, DIM)
+        label:SetPoint("LEFT", order, "BOTTOMLEFT", 10, fromBottom + 11)
+        local function bump(delta)
+            local values = db()[field]
+            local key = win.orderKey or "cds"
+            values[key] = math.max(minV, math.min(maxV, values[key] + delta))
+            CDM.Refresh()
+            refreshOrderList()
+        end
+        local plus = flatButton(order, "+", 24, 22, function() bump(2) end)
+        plus:SetPoint("BOTTOMRIGHT", -8, fromBottom)
+        local minus = flatButton(order, "-", 24, 22, function() bump(-2) end)
+        minus:SetPoint("BOTTOMRIGHT", -92, fromBottom)
+        local val = text(order, "GameFontHighlight")
+        val:SetPoint("CENTER", order, "BOTTOMRIGHT", -62, fromBottom + 11)
+        return val, minus, plus
+    end
+    win.sizeText, win.sizeMinus, win.sizePlus = barStepper("Icon size", "rowSize", 12, 96, 68)
+    win.spacingText, win.spacingMinus, win.spacingPlus = barStepper("Spacing", "rowSpacing", 0, 30, 40)
+    win.orderClear = flatButton(order, "Clear", 206, 22)
+    win.orderClear:SetPoint("BOTTOMLEFT", 8, 9)
 
     -- right: settings
     local opts = card(win, "SETTINGS", 676, 190, TOP, BOTTOM)
@@ -428,23 +468,6 @@ local function build()
         local fs = text(opts, "GameFontHighlightSmall", str, DIM)
         fs:SetPoint("TOPLEFT", 10, y)
         y = y - 16
-    end
-    local function stepper(name, key, minV, maxV)
-        caption(name)
-        local function bump(delta)
-            local d = db()
-            d[key] = math.max(minV, math.min(maxV, d[key] + delta))
-            CDM.Refresh()
-            refreshList()
-        end
-        local minus = flatButton(opts, "-", 24, 22, function() bump(-2) end)
-        minus:SetPoint("TOPLEFT", 10, y)
-        local plus = flatButton(opts, "+", 24, 22, function() bump(2) end)
-        plus:SetPoint("TOPLEFT", 146, y)
-        local val = text(opts, "GameFontHighlight")
-        val:SetPoint("CENTER", opts, "TOPLEFT", 95, y - 11)
-        y = y - 32
-        return val
     end
     local function check(str, onClick)
         local c = checkbox(opts)
@@ -462,10 +485,6 @@ local function build()
         return b
     end
 
-    win.sizeText = stepper("Icon size", "size", 12, 96)
-    win.spacingText = stepper("Spacing", "spacing", 0, 30)
-
-    y = y - 4
     win.hideReady = check("Hide ready cooldowns", function(self) db().hideReady = self:GetChecked() and true or false CDM.Refresh() end)
     win.names = check("Show spell names", function(self) db().showNames = self:GetChecked() and true or false CDM.Refresh() end)
     win.minimap = check("Minimap button", function(self) ForeverCDM_SetMinimapShown(self:GetChecked() and true or false) end)
@@ -594,7 +613,7 @@ local function buildMinimap()
             placeMinimap()
         end)
     end)
-    mm:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    mm:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) CDM.Persist() end)
     mm:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("|cffd2621fForever|r Cooldown Manager")
@@ -608,6 +627,7 @@ end
 
 function ForeverCDM_SetMinimapShown(shown)
     db().minimap.hide = not shown
+    CDM.Persist()
     if not Minimap then return end
     if shown and not mm then buildMinimap() end
     if mm then

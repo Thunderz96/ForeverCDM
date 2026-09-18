@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 (2026-09-18)
+- **Your setup now survives a game restart on the beta.** The Forever beta client saves addon
+  settings and never loads them back, so every addon starts from defaults. Forever Cooldown Manager
+  now also keeps its settings in client CVars, which the client does load, and restores them when
+  the saved settings come back empty. Kept per character. Once Blizzard fixes the client the mirror
+  simply stops being needed. `/fcdm mirror` shows its state.
+- **Each bar has its own icon size and spacing.** Pick a bar in the Bars card and adjust it there.
+  `/fcdm size buffs 30` sets one bar, `/fcdm size 40` sets them all.
+- **Spell ranks are shown.** Forever lists every rank as its own spell, so the spellbook and bar
+  lists now say "Rank 1", "Rank 2", in rank order.
+- A buff ticked as one rank lights up when you cast another rank of the same spell.
+- Auto-fill adds only the highest rank of each spell.
+
 ## 0.3.6 (2026-09-18)
 - Settings window redrawn: solid background, three titled cards (Spellbook, Bar order, Settings),
   spells grouped under their spellbook tab, hover highlight, a scroll position thumb, and flat

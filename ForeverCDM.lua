@@ -37,6 +37,7 @@ local db
 local rows = {}          -- key -> row frame
 local icons = { cds = {}, utilities = {}, buffs = {} }
 local BAR_KEYS = { "cds", "utilities", "buffs" }
+local persistSoon        -- defined in the settings-mirror section; called wherever settings change
 
 local function say(fmt, ...) print(NAME .. ": " .. string.format(fmt, ...)) end
 
@@ -64,6 +65,14 @@ local function ensureDB()
     db.pos.utilities = db.pos.utilities or { "CENTER", 0, -220 }
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
     db.minimap = db.minimap or { angle = 215, hide = false }
+    -- Each bar has its own icon size and spacing. Older profiles had one pair
+    -- for all bars (db.size / db.spacing), which seeds the per-bar values once.
+    db.rowSize = db.rowSize or {}
+    db.rowSpacing = db.rowSpacing or {}
+    for _, key in ipairs(BAR_KEYS) do
+        db.rowSize[key] = db.rowSize[key] or db.size
+        db.rowSpacing[key] = db.rowSpacing[key] or db.spacing
+    end
 end
 
 -- Spell helpers ---------------------------------------------------------------
@@ -117,7 +126,7 @@ end
 local function layoutRow(key)
     local row = rows[key]
     local list = db[key]
-    local size, gap = db.size, db.spacing
+    local size, gap = db.rowSize[key], db.rowSpacing[key]
     local shown = 0
     for i, id in ipairs(list) do
         local f = icons[key][i]
@@ -168,6 +177,7 @@ local function newRow(key, label)
         self:StopMovingOrSizing()
         local point, _, _, x, y = self:GetPoint(1)
         db.pos[key] = { point, x, y }
+        persistSoon()
     end)
     rows[key] = row
     return row
@@ -175,13 +185,14 @@ end
 
 function ForeverCDM_SetLocked(locked)
     db.locked = locked
-    for _, row in pairs(rows) do
+    for key, row in pairs(rows) do
         row:EnableMouse(not locked)
         row.bg:SetShown(not locked)
         row.label:SetShown(not locked)
         -- an empty row still needs something to grab
-        if not locked and row:GetWidth() < 40 then row:SetSize(40, db.size) end
+        if not locked and row:GetWidth() < 40 then row:SetSize(40, db.rowSize[key]) end
     end
+    persistSoon()
 end
 
 -- Updates -------------------------------------------------------------------------
@@ -223,6 +234,47 @@ local function updateCooldowns(key)
     end
 end
 
+-- Spell ranks. Forever lists every rank of a spell as its own spellbook entry
+-- with its own spellID, so "Seal of Righteousness" can be three IDs. rankText
+-- holds the label ("Rank 2"); siblings maps an ID to every ID sharing its name,
+-- so a buff ticked as Rank 1 still lights up when you cast Rank 2.
+local rankText, siblings = {}, {}
+
+local function buildRankIndex()
+    rankText, siblings = {}, {}
+    if not (C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines) then return end
+    local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+    local byName = {}
+    for line = 1, C_SpellBook.GetNumSpellBookSkillLines() do
+        local info = C_SpellBook.GetSpellBookSkillLineInfo(line)
+        if info then
+            for i = info.itemIndexOffset + 1, info.itemIndexOffset + info.numSpellBookItems do
+                local item = C_SpellBook.GetSpellBookItemInfo(i, bank)
+                if item and item.spellID and not item.isPassive then
+                    local sub = item.subName
+                    if (not sub or sub == "") and C_Spell and C_Spell.GetSpellSubtext then
+                        sub = C_Spell.GetSpellSubtext(item.spellID)
+                    end
+                    if sub and sub ~= "" then rankText[item.spellID] = sub end
+                    local name = item.name or item.spellID
+                    byName[name] = byName[name] or {}
+                    table.insert(byName[name], item.spellID)
+                end
+            end
+        end
+    end
+    for _, ids in pairs(byName) do
+        if #ids > 1 then
+            for _, id in ipairs(ids) do siblings[id] = ids end
+        end
+    end
+end
+
+-- "Rank 12" -> 12; 0 when the spell has no numbered rank.
+local function rankNumber(id)
+    return tonumber((rankText[id] or ""):match("%d+")) or 0
+end
+
 -- Is THIS spell's aura secret right now? The client answers per spell
 -- (C_Secrets.ShouldSpellAuraBeSecret), which is finer than the global
 -- ShouldAurasBeSecret: a buff Blizzard marks NeverSecret stays readable in
@@ -246,6 +298,15 @@ local function updateBuffs()
             -- protected or it burns the client's 100-error cap in under a minute.
             local okA, a = pcall(C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID or function() end, f.spellID)
             if not okA or secret(a) or (issecrettable and issecrettable(a)) then a = nil end
+            -- Not up under this exact ID: it may be up as another rank of the same spell.
+            if not a and siblings[f.spellID] then
+                for _, sid in ipairs(siblings[f.spellID]) do
+                    if sid ~= f.spellID then
+                        local okS, s = pcall(C_UnitAuras.GetPlayerAuraBySpellID, sid)
+                        if okS and s and not secret(s) and not (issecrettable and issecrettable(s)) then a = s break end
+                    end
+                end
+            end
             -- A spell-ID lookup may stop identifying an aura during combat. Only
             -- reuse an instance we previously identified; never guess its spell.
             if not a and restricted and f.auraInstanceID and C_UnitAuras.GetAuraDataByAuraInstanceID then
@@ -275,7 +336,10 @@ local function updateBuffs()
                     -- Remember how long this buff lasts. In combat the aura is
                     -- unreadable, but our own cast event plus this number is
                     -- enough to draw an honest timer (see onPlayerCast).
-                    db.buffDurations[f.spellID] = dur
+                    if db.buffDurations[f.spellID] ~= dur then
+                        db.buffDurations[f.spellID] = dur
+                        persistSoon()
+                    end
                 else
                     f.cd:Clear()
                 end
@@ -411,10 +475,11 @@ local function refreshAll()
     updateCooldowns("cds")
     updateCooldowns("utilities")
     updateBuffs()
+    persistSoon()      -- every settings change funnels through here
 end
 
 -- Auto-populate from the spellbook: active, non-passive spells that have a
--- cooldown longer than the global one.
+-- cooldown longer than the global one. Only the highest rank of each spell.
 local function autoPopulate()
     if not (C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines) then say("spellbook API not available.") return 0 end
     local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
@@ -424,7 +489,13 @@ local function autoPopulate()
         if info then
             for i = info.itemIndexOffset + 1, info.itemIndexOffset + info.numSpellBookItems do
                 local item = C_SpellBook.GetSpellBookItemInfo(i, bank)
-                if item and item.spellID and not item.isPassive and not item.isOffSpec then
+                local topRank = true
+                if item and item.spellID and siblings[item.spellID] then
+                    for _, sid in ipairs(siblings[item.spellID]) do
+                        if rankNumber(sid) > rankNumber(item.spellID) then topRank = false end
+                    end
+                end
+                if item and item.spellID and not item.isPassive and not item.isOffSpec and topRank then
                     local id = item.spellID
                     local c = C_Spell.GetSpellCooldown and C_Spell.GetSpellCooldown(id)
                     local ch = C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(id)
@@ -450,8 +521,125 @@ local function autoPopulate()
     return added
 end
 
+-- Settings mirror ---------------------------------------------------------------------
+-- WHY: the Forever beta client writes addon SavedVariables on exit and never
+-- loads them at the next launch, so every addon starts from defaults. CVars an
+-- addon registers itself ARE saved and loaded by the client (config-cache.wtf),
+-- so the settings are also kept there as a short text string.
+--
+-- Rules: a SavedVariables table that did load always wins; the mirror is only
+-- applied when it came back empty. Once Blizzard fixes the client this section
+-- simply never restores anything. It is keyed per character, because tracked
+-- spells are class-specific. (CVar persistence seen in RevoltLive85/ForeverGuide.)
+local MIRROR_CHUNK, MIRROR_CHUNKS = 200, 10     -- characters per CVar, CVars per character
+local mirror = { available = false, hadSV = false, found = 0, restored = false, wrote = 0 }
+local mirrorDirty = false
+
+local function mirrorPrefix()
+    -- hashed so any character name, in any alphabet, gives a plain ASCII CVar name
+    local who = tostring(UnitName and UnitName("player") or "") .. "-" .. tostring(GetRealmName and GetRealmName() or "")
+    local h = 5381
+    for i = 1, #who do h = (h * 33 + who:byte(i)) % 2147483647 end
+    return string.format("FCDM%08xN", h)
+end
+
+local function encodeSettings(withDurations)
+    local parts = {}
+    local function put(k, v) parts[#parts + 1] = k .. "=" .. v end
+    put("v", "1")
+    put("L", db.locked and "1" or "0")
+    put("hr", db.hideReady and "1" or "0")
+    put("sn", db.showNames and "1" or "0")
+    put("mm", string.format("%d,%s", math.floor((db.minimap.angle or 215) + 0.5), db.minimap.hide and "1" or "0"))
+    local sz, gp = {}, {}
+    for i, key in ipairs(BAR_KEYS) do sz[i], gp[i] = db.rowSize[key], db.rowSpacing[key] end
+    put("sz", table.concat(sz, ","))
+    put("gp", table.concat(gp, ","))
+    for _, key in ipairs(BAR_KEYS) do
+        local tag = key:sub(1, 1)                  -- c, u, b
+        put("i" .. tag, table.concat(db[key], ","))
+        local p = db.pos[key]
+        put("p" .. tag, string.format("%s,%.1f,%.1f", tostring(p[1]), p[2] or 0, p[3] or 0))
+    end
+    if withDurations then
+        local dur = {}
+        for _, id in ipairs(db.buffs) do
+            if db.buffDurations[id] then dur[#dur + 1] = id .. ":" .. string.format("%.1f", db.buffDurations[id]) end
+        end
+        put("d", table.concat(dur, ","))
+    end
+    return table.concat(parts, ";")
+end
+
+local function applySettings(s)
+    local t = {}
+    for k, v in s:gmatch("([^;=]+)=([^;]*)") do t[k] = v end
+    if t.v ~= "1" then return false end
+    local function nums(str)
+        local out = {}
+        for n in (str or ""):gmatch("[^,]+") do out[#out + 1] = tonumber(n) end
+        return out
+    end
+    db.locked = t.L ~= "0"
+    db.hideReady = t.hr == "1"
+    db.showNames = t.sn == "1"
+    local angle, hide = (t.mm or ""):match("^(-?%d+),(%d)$")
+    if angle then db.minimap.angle, db.minimap.hide = tonumber(angle), hide == "1" end
+    local sz, gp = nums(t.sz), nums(t.gp)
+    for i, key in ipairs(BAR_KEYS) do
+        if sz[i] then db.rowSize[key] = sz[i] end
+        if gp[i] then db.rowSpacing[key] = gp[i] end
+        local tag = key:sub(1, 1)
+        if t["i" .. tag] then db[key] = nums(t["i" .. tag]) end
+        local point, x, y = (t["p" .. tag] or ""):match("^(%a+),(-?[%d%.]+),(-?[%d%.]+)$")
+        if point then db.pos[key] = { point, tonumber(x), tonumber(y) } end
+    end
+    for id, dur in (t.d or ""):gmatch("(%d+):([%d%.]+)") do
+        db.buffDurations[tonumber(id)] = tonumber(dur)
+    end
+    return true
+end
+
+local function readMirror()
+    if not (C_CVar and C_CVar.RegisterCVar and C_CVar.GetCVar and C_CVar.SetCVar) then return nil end
+    mirror.available = true
+    local prefix, parts = mirrorPrefix(), {}
+    for i = 0, MIRROR_CHUNKS - 1 do pcall(C_CVar.RegisterCVar, prefix .. i, "") end
+    for i = 0, MIRROR_CHUNKS - 1 do
+        local ok, v = pcall(C_CVar.GetCVar, prefix .. i)
+        if not ok or type(v) ~= "string" or v == "" then break end
+        parts[#parts + 1] = v
+    end
+    local s = table.concat(parts)
+    return s ~= "" and s or nil
+end
+
+local function writeMirror()
+    mirrorDirty = false
+    if not (db and mirror.available) then return end
+    local s = encodeSettings(true)
+    if #s > MIRROR_CHUNK * MIRROR_CHUNKS then s = encodeSettings(false) end   -- durations are re-learnable
+    if #s > MIRROR_CHUNK * MIRROR_CHUNKS then mirror.wrote = -1 return end     -- too big: keep the last good copy
+    local prefix = mirrorPrefix()
+    -- every chunk is written, unused ones as "", so a shorter string never
+    -- leaves the tail of an older, longer one behind
+    for i = 0, MIRROR_CHUNKS - 1 do
+        pcall(C_CVar.SetCVar, prefix .. i, s:sub(i * MIRROR_CHUNK + 1, (i + 1) * MIRROR_CHUNK))
+    end
+    mirror.wrote = #s
+end
+
+persistSoon = function()
+    if mirrorDirty then return end
+    mirrorDirty = true
+    if C_Timer and C_Timer.After then C_Timer.After(1, writeMirror) else writeMirror() end
+end
+
 -- Shared with the config window.
 ForeverCDM = ForeverCDM or {}
+function ForeverCDM.Persist() persistSoon() end
+function ForeverCDM.SpellRank(id) return rankText[id] end
+function ForeverCDM.RankNumber(id) return rankNumber(id) end
 function ForeverCDM.GetDB() return db end
 function ForeverCDM.Refresh() refreshAll() end
 function ForeverCDM.SpellName(id) return spellName(id) end
@@ -466,7 +654,18 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:SetScript("OnEvent", function(self, event, ...)
     if event == "PLAYER_LOGIN" then
+        -- Did the client hand us saved settings? On the beta it never does.
+        mirror.hadSV = type(ForeverCDMDB) == "table" and next(ForeverCDMDB) ~= nil
         ensureDB()
+        local stored = readMirror()
+        mirror.found = stored and #stored or 0
+        if stored and not mirror.hadSV then
+            mirror.restored = applySettings(stored)
+            if mirror.restored then
+                say("the client did not load saved settings (beta bug), so they were restored from the settings mirror.")
+            end
+        end
+        buildRankIndex()
         newRow("cds", "Cooldowns")
         newRow("utilities", "Utilities")
         newRow("buffs", "Buffs")
@@ -476,6 +675,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         self:RegisterUnitEvent("UNIT_AURA", "player")
         self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         self:RegisterEvent("SPELLS_CHANGED")
+        self:RegisterEvent("PLAYER_LOGOUT")
         local ver = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version") or "?"
         say("v%s loaded. /fcdm opens settings.", tostring(ver))
         if ForeverCDM_InitMinimap then ForeverCDM_InitMinimap() end
@@ -485,7 +685,10 @@ ev:SetScript("OnEvent", function(self, event, ...)
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         onPlayerCast(...)
         updateBuffs()
+    elseif event == "PLAYER_LOGOUT" then
+        writeMirror()        -- flush anything still waiting on the debounce
     elseif event == "SPELLS_CHANGED" then
+        buildRankIndex()
         refreshAll()
         if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
     else
@@ -507,7 +710,8 @@ local HELP = {
     "/fcdm auto              add every spellbook spell that has a cooldown",
     "/fcdm list              show what is tracked",
     "/fcdm unlock | lock     drag the rows, then lock",
-    "/fcdm size <px>         icon size (default 36)   /fcdm spacing <px>",
+    "/fcdm size [bar] <px>   icon size, all bars or one of cds|utility|buffs. Same for /fcdm spacing",
+    "/fcdm mirror            state of the saved-settings workaround for the beta client",
     "/fcdm hideready on|off  hide cooldown icons while ready",
     "/fcdm names on|off      show spell names under icons",
     "/fcdm minimap           show or hide the minimap button",
@@ -560,10 +764,41 @@ SlashCmdList.FOREVERCDM = function(msg)
         if ForeverCDM_ToggleConfig then ForeverCDM_ToggleConfig() else say("config window not loaded.") end
 
     elseif cmd == "size" or cmd == "spacing" then
-        local n = tonumber(rest)
-        if not n then say("usage: /fcdm %s <pixels>", cmd) return end
-        db[cmd] = math.max(cmd == "size" and 12 or 0, math.min(cmd == "size" and 96 or 30, n))
+        -- "/fcdm size 40" sets every bar; "/fcdm size buffs 30" sets one.
+        local which, value = rest:match("^(%a+)%s+(%-?%d+)$")
+        local n = tonumber(value or rest)
+        local alias = { cds = "cds", cd = "cds", cooldowns = "cds", utility = "utilities", utilities = "utilities",
+                        util = "utilities", buffs = "buffs", buff = "buffs" }
+        local key = which and alias[strlower(which)]
+        if not n or (which and not key) then
+            say("usage: /fcdm %s [cds|utility|buffs] <pixels>", cmd)
+            return
+        end
+        n = math.max(cmd == "size" and 12 or 0, math.min(cmd == "size" and 96 or 30, n))
+        local field = cmd == "size" and "rowSize" or "rowSpacing"
+        for _, k in ipairs(BAR_KEYS) do
+            if not key or k == key then db[field][k] = n end
+        end
         refreshAll()
+        if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
+
+    elseif cmd == "mirror" then
+        -- State of the saved-settings workaround; see the settings-mirror section.
+        if not mirror.available then say("settings mirror: this client has no C_CVar.RegisterCVar, so it is off.") return end
+        say("settings mirror: saved settings at login %s; mirror held %d characters at login and %s. Last write: %s.",
+            mirror.hadSV and "LOADED (mirror on standby)" or "were EMPTY (beta bug)",
+            mirror.found, mirror.restored and "was restored" or "was not needed",
+            mirror.wrote == -1 and "skipped, settings too large" or (mirror.wrote .. " characters"))
+        if rest == "restore" then
+            local stored = readMirror()
+            if stored and applySettings(stored) then
+                refreshAll()
+                if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
+                say("applied the mirror over the current settings.")
+            else
+                say("nothing stored to restore.")
+            end
+        end
 
     elseif cmd == "hideready" or cmd == "names" then
         local on = rest == "on" or rest == "1" or rest == "true"
